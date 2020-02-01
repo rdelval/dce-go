@@ -42,18 +42,16 @@ import (
 )
 
 const (
-	OUTPUT_DELIMITER        = ","
-	PORT_SEPARATOR          = ":"
-	PRIM_INSPECT_RESULT_LEN = 7
-	INSPECT_RESULT_LEN      = 6
+	OutputDelimiter      = ","
+	PortSeparator        = ":"
+	PrimInspectResultLen = 7
+	InspectResultLen     = 6
 )
 
-var ComposeExecutorDriver executor.ExecutorDriver
 var CurPodStatus = &Status{
 	Status: types.POD_STAGING,
 }
 
-var ComposeFiles []string
 var ComposeTaskInfo *mesos.TaskInfo
 var PluginOrder []string
 
@@ -67,6 +65,12 @@ var LaunchCmdAttempted = false
 
 // taskStatusCh is pushed with the task status sent to Mesos, so any custom pod task status hooks can be executed
 var taskStatusCh = make(chan string, 1)
+
+
+type Pod struct {
+	ComposeFiles []string
+	Driver       executor.ExecutorDriver
+}
 
 // Check exit code of all the containers in the pod.
 // If all the exit codes are zero, then assign zero as pod's exit code,
@@ -655,7 +659,7 @@ func GetDockerPorts(containerId string, privatePort string) (string, error) {
 		return "", err
 	}
 	log.Printf("Get Container Dynamic Port : %s", string(out))
-	if ports := strings.Split(string(out), PORT_SEPARATOR); len(ports) > 1 {
+	if ports := strings.Split(string(out), PortSeparator); len(ports) > 1 {
 		return strings.TrimSuffix(ports[1], "\n"), nil
 	}
 	return "", err
@@ -703,9 +707,9 @@ func InspectContainerDetails(containerId string, healthcheck bool) (types.Contai
 
 func ParseToContainerDetail(output string, healthcheck bool) (types.ContainerStatusDetails, error) {
 	var containerStatusDetails types.ContainerStatusDetails
-	array := strings.Split(output, OUTPUT_DELIMITER)
+	array := strings.Split(output, OutputDelimiter)
 	if healthcheck {
-		if len(array) != PRIM_INSPECT_RESULT_LEN {
+		if len(array) != PrimInspectResultLen {
 			err := errors.New("mismatch with expected inspect result")
 			return containerStatusDetails, err
 		}
@@ -727,7 +731,7 @@ func ParseToContainerDetail(output string, healthcheck bool) (types.ContainerSta
 		}
 		return containerStatusDetails, nil
 	}
-	if len(array) != INSPECT_RESULT_LEN {
+	if len(array) != InspectResultLen {
 		err := errors.New("Mismatch with expected inspect result")
 		return containerStatusDetails, err
 	}
@@ -814,7 +818,7 @@ func updatePodLaunched() {
 	log.Printf("Updated Current Pod Status with Pod Launched ")
 }
 
-func SendPodStatus(status types.PodStatus) {
+func (p *Pod) SendPodStatus(status types.PodStatus) {
 	logger := log.WithFields(log.Fields{
 		"status": status,
 		"func":   "pod.SendPodStatus",
@@ -831,13 +835,13 @@ func SendPodStatus(status types.PodStatus) {
 	switch status {
 	case types.POD_RUNNING:
 		updatePodLaunched()
-		SendMesosStatus(ComposeExecutorDriver, ComposeTaskInfo.GetTaskId(), mesos.TaskState_TASK_RUNNING.Enum())
+		p.SendMesosStatus(ComposeTaskInfo.GetTaskId(), mesos.TaskState_TASK_RUNNING.Enum())
 	case types.POD_FINISHED:
 		// Stop pod after sending status to mesos
 		// To kill system proxy container
 		if len(MonitorContainerList) > 0 {
 			logger.Printf("Stop containers still running in the pod: %v", MonitorContainerList)
-			err := StopPod(ComposeFiles)
+			err := StopPod(p.ComposeFiles)
 			if err != nil {
 				logger.Errorf("Error stop pod: %v", err)
 			}
@@ -848,29 +852,29 @@ func SendPodStatus(status types.PodStatus) {
 				logger.Error(err)
 			}
 		}
-		SendMesosStatus(ComposeExecutorDriver, ComposeTaskInfo.GetTaskId(), mesos.TaskState_TASK_FINISHED.Enum())
+		p.SendMesosStatus(ComposeTaskInfo.GetTaskId(), mesos.TaskState_TASK_FINISHED.Enum())
 	case types.POD_FAILED:
 		if LaunchCmdAttempted {
-			err := StopPod(ComposeFiles)
+			err := StopPod(p.ComposeFiles)
 			if err != nil {
 				logger.Errorf("Error cleaning up pod : %v\n", err.Error())
 			}
 		}
-		SendMesosStatus(ComposeExecutorDriver, ComposeTaskInfo.GetTaskId(), mesos.TaskState_TASK_FAILED.Enum())
+		p.SendMesosStatus(ComposeTaskInfo.GetTaskId(), mesos.TaskState_TASK_FAILED.Enum())
 	case types.POD_PULL_FAILED:
 		callAllPluginsPostKillTask()
-		SendMesosStatus(ComposeExecutorDriver, ComposeTaskInfo.GetTaskId(), mesos.TaskState_TASK_FAILED.Enum())
+		p.SendMesosStatus(ComposeTaskInfo.GetTaskId(), mesos.TaskState_TASK_FAILED.Enum())
 
 	case types.POD_COMPOSE_CHECK_FAILED:
 		callAllPluginsPostKillTask()
-		SendMesosStatus(ComposeExecutorDriver, ComposeTaskInfo.GetTaskId(), mesos.TaskState_TASK_FAILED.Enum())
+		p.SendMesosStatus(ComposeTaskInfo.GetTaskId(), mesos.TaskState_TASK_FAILED.Enum())
 	}
 
 	logger.Printf("MesosStatus %s completed", status)
 }
 
-//Update mesos and pod status
-func SendMesosStatus(driver executor.ExecutorDriver, taskId *mesos.TaskID, state *mesos.TaskState) error {
+// Update mesos and pod status
+func (p *Pod) SendMesosStatus(taskId *mesos.TaskID, state *mesos.TaskState) error {
 	logger := log.WithFields(log.Fields{
 		"state": state.Enum().String(),
 		"func":  "pod.SendMesosStatus",
@@ -882,7 +886,7 @@ func SendMesosStatus(driver executor.ExecutorDriver, taskId *mesos.TaskID, state
 	}
 
 	logger.Printf("start sending status %s to mesos", state.Enum().String())
-	_, err := driver.SendStatusUpdate(runStatus)
+	_, err := p.Driver.SendStatusUpdate(runStatus)
 	if err != nil {
 		logger.Errorf("Error updating mesos task status : %v", err.Error())
 		return err
@@ -898,7 +902,7 @@ func SendMesosStatus(driver executor.ExecutorDriver, taskId *mesos.TaskID, state
 			state.Enum().String() == mesos.TaskState_TASK_FAILED.Enum().String() {
 
 			log.Printf("Calling log write function again for container logs.")
-			go dockerLogToPodLogFile(ComposeFiles, false)
+			go dockerLogToPodLogFile(p.ComposeFiles, false)
 		}
 	}
 
@@ -913,7 +917,7 @@ func SendMesosStatus(driver executor.ExecutorDriver, taskId *mesos.TaskID, state
 }
 
 // Wait for pod running/finished until timeout or failed
-func WaitOnPod(ctx *context.Context) {
+func (p *Pod) WaitOnPod(ctx *context.Context) {
 	select {
 	case <-(*ctx).Done():
 		if (*ctx).Err() == context.DeadlineExceeded {
@@ -921,7 +925,7 @@ func WaitOnPod(ctx *context.Context) {
 			if dump, ok := config.GetConfig().GetStringMap("dockerdump")["enable"].(bool); ok && dump {
 				DockerDump()
 			}
-			SendPodStatus(types.POD_FAILED)
+			p.SendPodStatus(types.POD_FAILED)
 		} else if (*ctx).Err() == context.Canceled {
 			log.Println("Stop waitUtil on pod, since pod is running/finished/failed")
 		}
@@ -1207,7 +1211,9 @@ healthCheck:
 
 // check if primary container unable health check or not
 func isHealthCheckConfigured(containerId string) (bool, error) {
-	out, err := waitUtil.RetryCmd(config.GetMaxRetry(), exec.Command("docker", "inspect", "--format='{{if .State.Health }}{{.State.Health.Status}}{{ end }}'", containerId))
+	out, err := waitUtil.RetryCmd(config.GetMaxRetry(),
+		exec.Command("docker", "inspect", "--format='{{if .State.Health }}{{.State.Health.Status}}{{ end }}'",
+			containerId))
 	if err != nil {
 		log.Errorf("Error executing cmd to check if healtcheck configured: %v", err)
 		return false, err
@@ -1219,7 +1225,6 @@ func isHealthCheckConfigured(containerId string) (bool, error) {
 	}
 
 	HealthCheckListId[containerId] = true
-	//log.Debugf("Initial Health Check : Container %s Health check is configured to true", containerId)
 	return true, nil
 }
 

@@ -108,7 +108,7 @@ func podMonitor(systemProxyId string) types.PodStatus {
 }
 
 // Polling pod monitor periodically
-func MonitorPoller() {
+func MonitorPoller(p *pod.Pod) {
 	logger := log.WithFields(log.Fields{
 		"func": "monitor.MonitorPoller",
 	})
@@ -119,11 +119,11 @@ func MonitorPoller() {
 	var infraContainerId string
 	var err error
 	if !config.GetConfig().GetBool(types.RM_INFRA_CONTAINER) {
-		infraContainerId, err = pod.GetContainerIdByService(pod.ComposeFiles, types.INFRA_CONTAINER)
+		infraContainerId, err = pod.GetContainerIdByService(p.ComposeFiles, types.INFRA_CONTAINER)
 		if err != nil {
 			logger.Errorf("Error getting container id of service %s: %v", types.INFRA_CONTAINER, err)
 			logger.Errorln("POD_MONITOR_FAILED -- Send Failed")
-			pod.SendPodStatus(types.POD_FAILED)
+			p.SendPodStatus(types.POD_FAILED)
 			return
 		}
 		logger.Printf("Infra container id: %s", infraContainerId)
@@ -144,15 +144,15 @@ func MonitorPoller() {
 	}
 
 	if err != nil {
-		pod.SendPodStatus(types.POD_FAILED)
+		p.SendPodStatus(types.POD_FAILED)
 		return
 	}
 
 	switch utils.ToPodStatus(res) {
 	case types.POD_FAILED:
-		pod.SendPodStatus(types.POD_FAILED)
+		p.SendPodStatus(types.POD_FAILED)
 
 	case types.POD_FINISHED:
-		pod.SendPodStatus(types.POD_FINISHED)
+		p.SendPodStatus(types.POD_FINISHED)
 	}
 }

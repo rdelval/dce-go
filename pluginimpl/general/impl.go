@@ -47,10 +47,10 @@ func init() {
 	})
 	logger.Println("Plugin Registering")
 
-	//Register plugin with name
+	// Register plugin with name
 	plugin.ComposePlugins.Register(new(generalExt), "general")
 
-	//Merge plugin config file
+	// Merge plugin config file
 	config.ConfigInit(utils.SearchFile(".", "general.yaml"))
 }
 
